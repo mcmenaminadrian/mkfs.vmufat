@@ -134,18 +134,27 @@ unsigned int _round_down(unsigned int x)
 	return y;
 }
 
-int calculate_vmuparams(int device_numb, struct vmuparam* param, int verbose)
+int calculate_vmuparams(int device_numb, struct vmuparam* param, int blocknum,
+	int verbose)
 {
 	int error = 0;
 	off_t size;
 
 	size = lseek(device_numb, 0, SEEK_END);
-	if (size < BLOCKSIZE * 4) {
+	if ((size < BLOCKSIZE * 4) ||(blocknum > 0 && blocknum < 4)) {
 		printf("Device just %i octets in size. Too small for"
 			" VMUFAT volume\n", size);
 		error = -1;
 		goto out;
 	}
+	else if (size < blocknum * BLOCKSIZE) {
+		printf("Device only %i octets in size. Too small for"
+			" your request of %i blocks\n", size, blocknum);
+		error = -1;
+		goto out;
+	}
+	else if (blocknum)
+		size = blocknum * BLOCKSIZE;
 	param->size = _round_down(size >> BLOCKSHIFT) << BLOCKSHIFT;
 	param->rootblock = (param->size >> BLOCKSHIFT) - 1;
 	param->fatstart = param->rootblock - 1;
@@ -451,7 +460,7 @@ out:
 
 int main(int argc, char* argv[])
 {
-	int blocknum;
+	int blocknum = 0;
 	int i;
 	int verbose = 0, scanbadblocks = 0, useblocklist = 0;
 	int error = 1, device_numb;
@@ -497,7 +506,7 @@ int main(int argc, char* argv[])
 	}
 	device_name = argv[0];
 	argc--;
-	argv--;
+	argv++;
 
 	if (argc) {
 		blocknum = atoi(argv[0]);
@@ -531,7 +540,7 @@ int main(int argc, char* argv[])
 			goto close;
 	}
 
-	if (calculate_vmuparams(device_numb, &params, verbose) < 0)
+	if (calculate_vmuparams(device_numb, &params, blocknum, verbose) < 0)
 		goto close;
 
 	if (mark_root_block(device_numb, &params, verbose) < 0)
