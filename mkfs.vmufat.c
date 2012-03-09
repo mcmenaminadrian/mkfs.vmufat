@@ -195,7 +195,7 @@ int mark_fat(int device_numb, const struct vmuparam* param, int verbose)
 	
 	buf = (uint16_t *)buffer;
 	for (i = 0; i < BLOCKSIZE / 2; i++)
-		buf[i] = 0xFFFC;
+		buf[i] = __cpu_to_le16(0xFFFC);
 
 	if (param->fatsize > 1) {
 		for (i = param->fatstart - 1;
@@ -210,21 +210,21 @@ int mark_fat(int device_numb, const struct vmuparam* param, int verbose)
 	/* Mark for the FAT and Directory */
 	start = (param->fatsize + param->dirsize) / BLOCKSIZE + 1;
 	for (j = param->rootblock - start; j < param->rootblock; j++) {
-		k = (j - param->dirstart - 1) * BLOCKSIZE;
+		k = (j - param->dirstart - 1) * BLOCKSIZE; printf("k is %i\n", k);
 		for (i = 0; i < BLOCKSIZE; i = i + 2) {
 			/* FAT */
 			if ((k + i) / 2 > 1 + param->fatstart - param->fatsize)
-				buf[i / 2] = (k + i) / 2 - 1;
+				buf[i / 2] = __cpu_to_le16((k + i) / 2 - 1);
 			else if ((k + i) / 2 == 1 + param->fatstart
 				- param->fatsize)
-				buf[i / 2] = 0xFFFA;
+				buf[i / 2] = __cpu_to_le16(0xFFFA);
 			/* Directory */
 			else if ((k + i) / 2 >  1 + param->dirstart 
 				- param->dirsize)
-				buf[i / 2] = (k + i) / 2 - 1;
+				buf[i / 2] = __cpu_to_le16((k + i) / 2 - 1);
 			else if ((k + i) / 2 == 1 + param->dirstart
 				- param->dirsize)
-				buf[i / 2] = 0xFFFA;
+				buf[i / 2] = __cpu_to_le16(0xFFFA);
 		}
 		if (start > 1) {
 			if (lseek(device_numb, j * BLOCKSIZE, SEEK_SET) < 0)
@@ -233,7 +233,7 @@ int mark_fat(int device_numb, const struct vmuparam* param, int verbose)
 				goto badwrite;
 		}
 	}
-	buf[BLOCKSIZE / 2 - 1] = 0xFFFA; /*Root block*/
+	buf[BLOCKSIZE / 2 - 1] = __cpu_to_le16(0xFFFA); /*Root block*/
 	if (lseek(device_numb, (j - 1) * BLOCKSIZE, SEEK_SET) < 0)
 		goto badseek;
 	if (write(device_numb, buffer, BLOCKSIZE) < BLOCKSIZE)
@@ -407,7 +407,7 @@ int _mark_block_bad(int device_numb, int badblock,
 	if (read(device_numb, buffer, BLOCKSIZE) != BLOCKSIZE)
 		goto out;
 	buf = (uint16_t *)buffer;
-	buf[badblock % (BLOCKSIZE / 2)] = 0xFFFA;
+	buf[badblock % (BLOCKSIZE / 2)] = __cpu_to_le16(0xFFFA);
 	if (lseek(device_numb, fatblock * BLOCKSIZE, SEEK_SET) < 0)
 		goto out;
 	if (write(device_numb, buffer, BLOCKSIZE) != BLOCKSIZE)
