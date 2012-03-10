@@ -208,9 +208,9 @@ int mark_fat(int device_numb, const struct vmuparam* param, int verbose)
 	}
 
 	/* Mark for the FAT and Directory */
-	start = (param->fatsize + param->dirsize) / BLOCKSIZE + 1;
+	start = 2 * (param->fatsize + param->dirsize) /  BLOCKSIZE + 1;
 	for (j = param->rootblock - start; j < param->rootblock; j++) {
-		k = (j - param->dirstart - 1) * BLOCKSIZE; printf("k is %i\n", k);
+		k = (j - param->dirstart - 1) * BLOCKSIZE;
 		for (i = 0; i < BLOCKSIZE; i = i + 2) {
 			/* FAT */
 			if ((k + i) / 2 > 1 + param->fatstart - param->fatsize)
