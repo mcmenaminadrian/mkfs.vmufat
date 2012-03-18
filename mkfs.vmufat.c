@@ -160,9 +160,9 @@ int calculate_vmuparams(int device_numb, struct vmuparam* param, int blocknum,
 	param->fatstart = param->rootblock - 1;
 	param->fatsize = (2 * (param->size >> BLOCKSHIFT)) >> BLOCKSHIFT;
 	param->dirstart = param->fatstart - param->fatsize;
-	/* Remainder divided in ratio 8:1 between user blocks and directory */
+	/* Remainder divided in ratio 16:1 between user blocks and directory */
 	param->dirsize = ((param->size >> BLOCKSHIFT)
-		- (1 + param->fatsize)) / 9;
+		- (1 + param->fatsize)) / 17;
 	if (verbose) {
 		printf("VMUFAT file system: Root block at %i\n",
 			param->rootblock);
