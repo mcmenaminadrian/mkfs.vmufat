@@ -19,7 +19,6 @@
 #include <time.h>
 #include <unistd.h>
 
-
 static const int BLOCKSIZE = 512;
 static const int BLOCKSHIFT = 9;
 
@@ -37,7 +36,7 @@ struct badblocklist {
 	struct badblocklist *next;
 };
 
-struct badblocklist* _add_badblock(struct badblocklist *root, int block)
+static struct badblocklist* _add_badblock(struct badblocklist *root, int block)
 {
 	struct badblocklist *nextone;
 
@@ -52,7 +51,7 @@ struct badblocklist* _add_badblock(struct badblocklist *root, int block)
 	return nextone;
 }
 
-void clean_blocklist(struct badblocklist *nextblock)
+static void clean_blocklist(struct badblocklist *nextblock)
 {
 	if (!nextblock)
 		return;
@@ -61,17 +60,17 @@ void clean_blocklist(struct badblocklist *nextblock)
 }
 	
 
-void usage()
+static void usage(void)
 {
 	printf("Create a VMUFAT filesystem.\n");
 	printf("Usage: mkfs.vmufat [-c|-l filename] [-N number-of-blocks]\n");
 	printf("\t[-B log2-number-of-blocks] [-v] device [number-of-blocks]\n");
 }
 
-int checkmount(char* device_name)
+static int checkmount(const char *device_name)
 {
-	FILE * f;
-	struct mntent * mnt;
+	FILE *f;
+	struct mntent *mnt;
 
 	if ((f = setmntent(_PATH_MOUNTED, "r")) == NULL)
 		return;
@@ -85,7 +84,7 @@ int checkmount(char* device_name)
 	return -1;
 }
 
-int readforbad(struct badblocklist** root, char* filename, int verbose)
+static int readforbad(struct badblocklist** root, const char* filename, int verbose)
 {
 	int error = 0;
 	FILE *listfile;
@@ -116,7 +115,7 @@ int readforbad(struct badblocklist** root, char* filename, int verbose)
 		else if (*root == NULL)
 			*root = lastbadblock;
 		if (verbose)
-			printf("Bad block at %ld noted.\n", blockno);
+			printf("Bad block at %lu noted.\n", blockno);
 		badblocks++;
 	}	
 
@@ -126,7 +125,7 @@ out:
 	return error;
 }
 
-unsigned int _round_down(unsigned int x)
+static unsigned int _round_down(unsigned int x)
 {
 	unsigned int y = 0x80000000;
 	while (y > x)
@@ -134,21 +133,21 @@ unsigned int _round_down(unsigned int x)
 	return y;
 }
 
-int calculate_vmuparams(int device_numb, struct vmuparam* param, int blocknum,
-	int verbose)
+static int calculate_vmuparams(int device_numb, struct vmuparam *param,
+	int blocknum, int verbose)
 {
 	int error = 0;
 	off_t size;
 
 	size = lseek(device_numb, 0, SEEK_END);
 	if ((size < BLOCKSIZE * 4) ||(blocknum > 0 && blocknum < 4)) {
-		printf("Device just %i octets in size. Too small for"
+		printf("Device just %lu octets in size. Too small for"
 			" VMUFAT volume\n", size);
 		error = -1;
 		goto out;
 	}
 	else if (size < blocknum * BLOCKSIZE) {
-		printf("Device only %i octets in size. Too small for"
+		printf("Device only %lu octets in size. Too small for"
 			" your request of %i blocks\n", size, blocknum);
 		error = -1;
 		goto out;
@@ -175,7 +174,7 @@ out:
 	return error;
 }
 
-char _i2bcd(unsigned int i)
+static char _i2bcd(unsigned int i)
 {
 	char bcd;
 	unsigned int digit;
@@ -186,7 +185,7 @@ char _i2bcd(unsigned int i)
 	return bcd;
 }
 
-int mark_fat(int device_numb, const struct vmuparam* param, int verbose)
+static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 {
 	char buffer[BLOCKSIZE];
 	uint16_t *buf;
@@ -252,13 +251,13 @@ badwrite:
 }
 		
 
-void _fill_root_block(char* buf, const struct vmuparam* param)
+static void _fill_root_block(char *buf, const struct vmuparam *param)
 {
 	int i;
 	time_t rawtime;
 	struct tm *ptm;
 	char century, year, month, day, hour, minute, second, weekday;
-	uint16_t* wordbuf;
+	uint16_t *wordbuf;
 
 	wordbuf = (uint16_t *)buf;
 
@@ -297,7 +296,7 @@ void _fill_root_block(char* buf, const struct vmuparam* param)
 	wordbuf[0x27] = __cpu_to_le16(param->dirsize * 8);
 }	
 
-int mark_root_block(int device_numb, const struct vmuparam *param, int verbose)
+static int mark_root_block(int device_numb, const struct vmuparam *param, int verbose)
 {
 	char zilches[BLOCKSIZE];
 	int i, error = 0;
@@ -329,7 +328,7 @@ out:
 	return error;
 }
 
-int zero_blocks(int device_numb, const struct vmuparam *param, int verbose)
+static int zero_blocks(int device_numb, const struct vmuparam *param, int verbose)
 {
 	char zilches[BLOCKSIZE];
 	int i, error = -1;
@@ -355,7 +354,7 @@ out:
 }
 		
 
-int scanforbad(int device_numb, struct badblocklist** root, int verbose)
+static int scanforbad(int device_numb, struct badblocklist** root, int verbose)
 {
 	int error = 0, i;
 	struct badblocklist *lastbadblock = NULL;
@@ -393,7 +392,7 @@ out:
 	return error;
 }
 
-int _mark_block_bad(int device_numb, int badblock,
+static int _mark_block_bad(int device_numb, int badblock,
 	const struct vmuparam *param)
 {
 	int error = -1;
@@ -418,7 +417,7 @@ out:
 
 }
 
-int mark_bad_blocks(int device_numb, struct badblocklist *root, 
+static int mark_bad_blocks(int device_numb, struct badblocklist *root, 
 	const struct vmuparam *param, int verbose)
 {
 	int error = 0;
