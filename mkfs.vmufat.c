@@ -227,8 +227,12 @@ static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 	for (j = param->rootblock - start; j < param->rootblock; j++) {
 		k = (j - param->dirstart - 1) * BLOCKSIZE;
 		for (i = 0; i < BLOCKSIZE; i = i + 2) {
+			/* Root or unreachable blocks */
+			if ((k + i) / 2 >= param->rootblock)
+				buf[i / 2] = __cpu_to_le16(0xFFFA); 
 			/* FAT */
-			if ((k + i) / 2 > 1 + param->fatstart - param->fatsize)
+			else if ((k + i) / 2 > 1 + param->fatstart
+				- param->fatsize)
 				buf[i / 2] = __cpu_to_le16((k + i) / 2 - 1);
 			else if ((k + i) / 2 == 1 + param->fatstart
 				- param->fatsize)
@@ -240,16 +244,13 @@ static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 			else if ((k + i) / 2 == 1 + param->dirstart
 				- param->dirsize)
 				buf[i / 2] = __cpu_to_le16(0xFFFA);
+			else
+				buf[i/2] = __cpu_to_le16(0xFFFC);
 		}
-		if (start > 1) {
-			if (pwrite(device_numb, buffer, BLOCKSIZE, j * BLOCKSIZE) < BLOCKSIZE)
-				goto badwrite;
-		}
+		if (pwrite(device_numb, buffer, BLOCKSIZE, j * BLOCKSIZE) 
+			< BLOCKSIZE)
+			goto badwrite;
 	}
-	buf[BLOCKSIZE / 2 - 1] = __cpu_to_le16(0xFFFA); /*Root block*/
-	if (pwrite(device_numb, buffer, BLOCKSIZE,
-		(j - 1) * BLOCKSIZE) < BLOCKSIZE)
-		goto badwrite;
 
 	if (verbose)
 		printf("FAT written\n");
