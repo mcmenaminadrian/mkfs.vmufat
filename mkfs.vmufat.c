@@ -15,6 +15,7 @@
 #include <mntent.h>
 #include <paths.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -100,7 +101,7 @@ static int readforbad(struct badblocklist** root, const char* filename, int verb
 	}
 
 	while (!feof(listfile)) {
-		if (fscanf(listfile, "%ld\n", &blockno) != 1) {
+		if (fscanf(listfile, "%lu\n", &blockno) != 1) {
 			printf("Cannot parse %s at line %i\n", filename,
 				badblocks + 1);
 			error = -1;
@@ -138,8 +139,14 @@ static int calculate_vmuparams(int device_numb, struct vmuparam *param,
 {
 	int error = 0;
 	off_t size;
-
-	size = lseek(device_numb, 0, SEEK_END);
+	struct stat devstat;
+	
+	if (fstat(device_numb, &devstat) < 0) {
+		printf("Could not stat device.\n");
+		error = -1;
+		goto out;
+	}
+	size = devstat.st_size;
 	if ((size < BLOCKSIZE * 4) ||(blocknum > 0 && blocknum < 4)) {
 		printf("Device just %lu octets in size. Too small for"
 			" VMUFAT volume\n", size);
@@ -187,10 +194,14 @@ static char _i2bcd(unsigned int i)
 
 static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 {
-	char buffer[BLOCKSIZE];
+	char *buffer;
 	uint16_t *buf;
 	int i, j, k, start;
 	int error = -1;
+	
+	buffer = malloc(BLOCKSIZE);
+	if (!buffer)
+		goto nomem;
 	
 	buf = (uint16_t *)buffer;
 	for (i = 0; i < BLOCKSIZE / 2; i++)
@@ -199,9 +210,8 @@ static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 	if (param->fatsize > 1) {
 		for (i = param->fatstart - 1;
 			i > param->fatstart - param->fatsize; i--) {
-			if (lseek(device_numb, i * BLOCKSIZE, SEEK_SET) < 0)
-				goto badseek;
-			if (write(device_numb, buffer, BLOCKSIZE) < BLOCKSIZE)
+			if (pwrite(device_numb, buffer, BLOCKSIZE,
+				i * BLOCKSIZE) < BLOCKSIZE)
 				goto badwrite;
 		}
 	}
@@ -226,27 +236,28 @@ static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 				buf[i / 2] = __cpu_to_le16(0xFFFA);
 		}
 		if (start > 1) {
-			if (lseek(device_numb, j * BLOCKSIZE, SEEK_SET) < 0)
-				goto badseek;
-			if (write(device_numb, buffer, BLOCKSIZE) < BLOCKSIZE)
+			if (pwrite(device_numb, buffer, BLOCKSIZE, j * BLOCKSIZE) < BLOCKSIZE)
 				goto badwrite;
 		}
 	}
 	buf[BLOCKSIZE / 2 - 1] = __cpu_to_le16(0xFFFA); /*Root block*/
-	if (lseek(device_numb, (j - 1) * BLOCKSIZE, SEEK_SET) < 0)
-		goto badseek;
-	if (write(device_numb, buffer, BLOCKSIZE) < BLOCKSIZE)
+	if (pwrite(device_numb, buffer, BLOCKSIZE,
+		(j - 1) * BLOCKSIZE) < BLOCKSIZE)
 		goto badwrite;
 
 	if (verbose)
 		printf("FAT written\n");
-	return 0;
-		
-badseek:
-	printf("Seek failed while writing FAT\n");
-	return error;
+	error = 0;
+	goto clean;
+
+nomem:
+	printf("Memory allocation failed.\n");		
+	goto out;
 badwrite:
-	printf("FAT write failed\n");
+	printf("FAT write failed.\n");
+clean:
+	free(buffer);
+out:
 	return error;
 }
 		
@@ -298,22 +309,22 @@ static void _fill_root_block(char *buf, const struct vmuparam *param)
 
 static int mark_root_block(int device_numb, const struct vmuparam *param, int verbose)
 {
-	char zilches[BLOCKSIZE];
+	char *zilches;
 	int i, error = 0;
-
-	for (i = 0; i < BLOCKSIZE; i++)
-		zilches[i] = '\0';
-
-	_fill_root_block(zilches, param);
-	if (lseek(device_numb, param->rootblock * BLOCKSIZE, SEEK_SET) < 0) {
-		printf("Failed to seek root block\n");
+	zilches = malloc(BLOCKSIZE);
+	if (!zilches) {
+		printf("Memory allocation failed.\n");
 		error = -1;
 		goto out;
 	}
-	if (write(device_numb, zilches, BLOCKSIZE) < BLOCKSIZE) {
+
+	memset(zilches, '\0', BLOCKSIZE);
+	_fill_root_block(zilches, param);
+	if (pwrite(device_numb, zilches, BLOCKSIZE,
+		param->rootblock * BLOCKSIZE) < BLOCKSIZE) {
 		printf("Could not write root block\n");
 		error = -1;
-		goto out;
+		goto clean;
 	}
 	if (verbose) {
 		printf("Root block written to block %i\n", param->rootblock);
@@ -323,32 +334,36 @@ static int mark_root_block(int device_numb, const struct vmuparam *param, int ve
 			zilches[0x36], zilches[0x37]);
 	}
 	
-
+clean:
+	free(zilches);
 out:
 	return error;
 }
 
 static int zero_blocks(int device_numb, const struct vmuparam *param, int verbose)
 {
-	char zilches[BLOCKSIZE];
+	char *zilches;
 	int i, error = -1;
+	zilches = malloc(BLOCKSIZE);
+	if (!zilches) {
+		printf("Memory allocation failed.\n");
+		goto out;
+	}
 
-	for (i = 0; i < BLOCKSIZE; i++)
-		zilches[i] = '\0';
+	memset(zilches, '\0', BLOCKSIZE);
 
 	for (i = 0; i <= param->dirstart; i++) {
-		if (lseek(device_numb, i * BLOCKSIZE, SEEK_SET) < 0) {
-			printf("Seek failed on device\n");
-			goto out;
-		}
-		if (write(device_numb, zilches, BLOCKSIZE) < BLOCKSIZE) {
+		if (pwrite(device_numb, zilches, BLOCKSIZE,
+			i * BLOCKSIZE) < BLOCKSIZE) {
 			printf("Write failed on device\n");
-			goto out;
+			goto clean;
 		}
 	}
 	error = 0;
 	if (verbose)
 		printf("Other blocks zeroed\n");
+clean:
+	free(zilches);
 out:
 	return error;
 }
@@ -360,34 +375,41 @@ static int scanforbad(int device_numb, struct badblocklist** root, int verbose)
 	struct badblocklist *lastbadblock = NULL;
 	off_t size;
 	long got;
-	char buffer[BLOCKSIZE];
+	struct stat devstat; 
+	char *buffer = malloc(BLOCKSIZE);
+	if (!buffer) {
+		error = -1;
+		printf("Memory allocation failed.\n");
+		goto out;
+	}
 	
-	size = lseek(device_numb, 0, SEEK_END);
+	if (fstat(device_numb, &devstat) < 0) {
+		printf("Could not stat device.\n");
+		error = -1;
+		goto clean;
+	}
+
+	size = devstat.st_size;
 
 	for (i = 0; i < size/BLOCKSIZE; i++)
 	{
 		if (verbose > 0)
 			printf("Testing block %i\n", i);
-		if (lseek(device_numb, i * BLOCKSIZE, SEEK_SET) !=
-			i * BLOCKSIZE) {
-			printf("Seek failed on device\n");
-			error = -1;
-			goto out;
-		}
-		got = read(device_numb, buffer, BLOCKSIZE);
+		got = pread(device_numb, buffer, BLOCKSIZE, i * BLOCKSIZE);
 		if (got != BLOCKSIZE) {
 			printf("Block %i gives bad read\n", i);
 			lastbadblock = _add_badblock(lastbadblock, i);
 			if (!lastbadblock) {
 				printf("Memory failure\n");
 				error = -1;
-				goto out;
+				goto clean;
 			}
 			else if (*root == NULL)
 				*root = lastbadblock;
 		}
 	}
-
+clean:
+	free(buffer);
 out:
 	return error;
 }
@@ -397,21 +419,25 @@ static int _mark_block_bad(int device_numb, int badblock,
 {
 	int error = -1;
 	int fatblock;
-	char buffer[BLOCKSIZE];
+	char *buffer;
 	uint16_t *buf;
+	buffer = malloc(BLOCKSIZE);
+	if (!buffer) {
+		printf("Memory allocation failed\n");
+		goto out;
+	}
 
 	fatblock = (2 * badblock) / BLOCKSIZE + param->dirstart + 1;
-	if (lseek(device_numb, fatblock * BLOCKSIZE, SEEK_SET) < 0)
-		goto out;
-	if (read(device_numb, buffer, BLOCKSIZE) != BLOCKSIZE)
-		goto out;
+	if (pread(device_numb, buffer, BLOCKSIZE, fatblock * BLOCKSIZE) != BLOCKSIZE)
+		goto clean;
 	buf = (uint16_t *)buffer;
 	buf[badblock % (BLOCKSIZE / 2)] = __cpu_to_le16(0xFFFA);
-	if (lseek(device_numb, fatblock * BLOCKSIZE, SEEK_SET) < 0)
-		goto out;
-	if (write(device_numb, buffer, BLOCKSIZE) != BLOCKSIZE)
-		goto out;
+	if (pwrite(device_numb, buffer, BLOCKSIZE,
+		fatblock * BLOCKSIZE) != BLOCKSIZE)
+		goto clean;
 	error = 0;
+clean:
+	free(buffer);
 out:
 	return error;
 
