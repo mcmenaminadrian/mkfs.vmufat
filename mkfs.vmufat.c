@@ -487,7 +487,7 @@ int main(int argc, char* argv[])
 {
 	int blocknum = 0;
 	int i;
-	int verbose = 0, scanbadblocks = 0, useblocklist = 0;
+	int verbose = 0, scanbadblocks = 0, useblocklist = 0, allowfile = 0;
 	int error = 1, device_numb;
 	char *blocklistfnm = NULL;
 	char *device_name = NULL;
@@ -501,7 +501,7 @@ int main(int argc, char* argv[])
 	}
 
 	opterr = 0;
-	while ((i = getopt(argc, argv, "cl:N:B:v")) != -1)
+	while ((i = getopt(argc, argv, "cl:N:B:vf")) != -1)
 		switch (i) {
 		case 'c':
 			scanbadblocks = 1;
@@ -518,6 +518,9 @@ int main(int argc, char* argv[])
 			break;
 		case 'v':
 			verbose = 1;
+			break;
+		case 'f':
+			allowfile = 1;
 			break;
 		default:
 			usage();
@@ -538,21 +541,23 @@ int main(int argc, char* argv[])
 		if (argc > 1)
 			usage();
 	}
+
 	if (checkmount(device_name) < 0)
 		goto out;
+
+	device_numb = open(device_name, O_RDWR);
+	if (device_numb < 0) {
+		printf("Attempting to open %s fails with error %i\n",
+			device_name, device_numb);
+		goto out;
+	}
 
 	if (stat(device_name, &statbuf) < 0) {
 		printf("Cannot get status of %s\n", device_name);
 		goto out;
 	}
-	if (!S_ISBLK(statbuf.st_mode)) {
+	if (allowfile < 1 && !S_ISBLK(statbuf.st_mode)) {
 		printf("%s must be a block device\n", device_name);
-		goto out;
-	}
-	device_numb = open(device_name, O_RDWR|O_EXCL);
-	if (device_numb < 0) {
-		printf("Attempting to open %s fails with error %i\n",
-			device_name, device_numb);
 		goto out;
 	}
 	
