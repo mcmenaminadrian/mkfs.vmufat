@@ -65,7 +65,8 @@ static void usage(void)
 {
 	printf("Create a VMUFAT filesystem.\n");
 	printf("Usage: mkfs.vmufat [-c|-l filename] [-N number-of-blocks]\n");
-	printf("\t[-B log2-number-of-blocks] [-v] device [number-of-blocks]\n");
+	printf("\t[-B log2-number-of-blocks] [-v] [-f]");
+	printf(" device [number-of-blocks]\n");
 }
 
 static int checkmount(const char *device_name)
