@@ -74,8 +74,10 @@ static int checkmount(const char *device_name)
 	FILE *f;
 	struct mntent *mnt;
 
-	if ((f = setmntent(_PATH_MOUNTED, "r")) == NULL)
-		return;
+	if ((f = setmntent(_PATH_MOUNTED, "r")) == NULL) {
+		printf("Failure. Cannot open file system description file for reading.\n");
+		return -1;
+	}
 	while ((mnt = getmntent(f)) != NULL)
 		if (strcmp(device_name, mnt->mnt_fsname) == 0)
 			break;
