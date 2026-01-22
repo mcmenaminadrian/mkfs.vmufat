@@ -28,6 +28,19 @@ struct vmudate {
     unsigned char weekday;
 };
 
+struct vmuparam {
+	unsigned int size;
+	unsigned int rootblock;
+	unsigned int fatstart;
+	unsigned int fatsize;
+	unsigned int dirstart;
+	unsigned int dirsize;
+};
+
+struct badblocklist {
+	int number;
+	struct badblocklist *next;
+};
 
 
 #define FATFREE     0xFFFC

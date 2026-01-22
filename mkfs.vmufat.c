@@ -21,20 +21,6 @@
 #include <unistd.h>
 #include "mkfs.vmufat.h"
 
-struct vmuparam {
-	unsigned int size;
-	unsigned int rootblock;
-	unsigned int fatstart;
-	unsigned int fatsize;
-	unsigned int dirstart;
-	unsigned int dirsize;
-};
-
-struct badblocklist {
-	int number;
-	struct badblocklist *next;
-};
-
 static struct badblocklist* _add_badblock(struct badblocklist *root, int block)
 {
 	struct badblocklist *nextone;
