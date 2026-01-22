@@ -43,7 +43,6 @@ static void clean_blocklist(struct badblocklist *nextblock)
 	clean_blocklist(nextblock->next);
 	free(nextblock);
 }
-	
 
 static void usage(void)
 {
