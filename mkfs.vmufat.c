@@ -1,7 +1,7 @@
 /*
  * mkfs.vmufat.c - make a linux (VMUFAT) filesystem
  *
- * Copyright (c) 2012 Adrian McMenamin adrianmcmenamin@gmail.com
+ * Copyright (c) 2012, 2026 Adrian McMenamin adrianmcmenamin@gmail.com
  * Licensed under Version 2 of the GNU General Public Licence
  *
  * Parts shamelessly copied from other mkfs code
@@ -19,9 +19,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-
-static const int BLOCKSIZE = 512;
-static const int BLOCKSHIFT = 9;
+#include "mkfs.vmufat.h"
 
 struct vmuparam {
 	unsigned int size;
@@ -64,9 +62,15 @@ static void clean_blocklist(struct badblocklist *nextblock)
 static void usage(void)
 {
 	printf("Create a VMUFAT filesystem.\n");
-	printf("Usage: mkfs.vmufat [-c|-l filename] [-N number-of-blocks]\n");
-	printf("\t[-B log2-number-of-blocks] [-v] [-f]");
+	printf("Usage: mkfs.vmufat [-s|-c|-l filename] [-N number-of-blocks]\n");
+	printf("\t[-B log2-number-of-blocks] [-v] [-f]\n");
+	printf("[-L label]");
 	printf(" device [number-of-blocks]\n");
+	printf("==============================\n");
+	printf("-s applies strict compatibility with SEGA VMU hardware (hidden blocks).\n");
+	printf("-c scans for bad blocks on device.\n");
+	printf("-l filename reads bad block list from filename.\n");
+	printf("-v verbose output.\n");
 }
 
 static int checkmount(const char *device_name)
@@ -137,34 +141,8 @@ static unsigned int _round_down(unsigned int x)
 	return y;
 }
 
-static int calculate_vmuparams(int device_numb, struct vmuparam *param,
-	int blocknum, int verbose)
+static void _set_vmuparams(struct vmuparam *param, off_t size)
 {
-	int error = 0;
-	off_t size;
-	struct stat devstat;
-	
-	if (fstat(device_numb, &devstat) < 0) {
-		printf("Could not stat device.\n");
-		error = -1;
-		goto out;
-	}
-	size = devstat.st_size;
-	if ((size < BLOCKSIZE * 4) ||(blocknum > 0 && blocknum < 4)) {
-		printf("Device just %lu octets in size. Too small for"
-			" VMUFAT volume\n", size);
-		error = -1;
-		goto out;
-	}
-	else if (size < blocknum * BLOCKSIZE) {
-		printf("Device only %lu octets in size. Too small for"
-			" your request of %i blocks\n", size, blocknum);
-		error = -1;
-		goto out;
-	}
-	else if (blocknum)
-		size = blocknum * BLOCKSIZE;
-
 	param->size = _round_down(size >> BLOCKSHIFT) << BLOCKSHIFT;
 	param->rootblock = (param->size >> BLOCKSHIFT) - 1;
 	param->fatstart = param->rootblock - 1;
@@ -174,18 +152,74 @@ static int calculate_vmuparams(int device_numb, struct vmuparam *param,
 	param->dirstart = param->fatstart - param->fatsize;
 	/* Remainder divided in ratio 16:1 between user blocks and directory */
 	param->dirsize = ((param->size >> BLOCKSHIFT)
-		- (1 + param->fatsize)) / 17;
+		- (1u + param->fatsize)) / (RATIO_DIR_TO_USERBLOCKS + 1u);
 	if (param->dirsize < 1)
 		param->dirsize = 1;
-	if (verbose) {
-		printf("VMUFAT file system: Root block at %i\n",
-			param->rootblock);
-		printf("\tFAT of length %i begins at %i\n", param->fatsize,
-			param->fatstart);
-		printf("\tDirectory of length %i begins at %i\n",
-			param->dirsize, param->dirstart);
+}
+
+static void _set_vmuparams_strict(struct vmuparam *param)
+{
+	/* For strict VMUFAT, we have fixed sizes */
+	param->size = STRICTSIZE; /* 128K VMU size */
+	param->rootblock = ROOTBLOCK_STRICT;
+	param->fatstart = FATSTART_STRICT;
+	param->fatsize = FATSIZE_STRICT;
+	param->dirstart = DIRSTART_STRICT;
+	param->dirsize = DIRSIZE_STRICT;
+}
+
+static int calculate_vmuparams(int device_numb, struct vmuparam *param,
+	int blocknum, int strict_compat, int verbose)
+{
+	int error = 0;
+	off_t size;
+	struct stat devstat;
+
+	size = lseek(device_numb, 0, SEEK_END);
+	if (strict_compat)
+	{
+		if (size > STRICTSIZE) {
+			size = STRICTSIZE; /* 128K VMU size */
+			if (verbose)
+				printf("Using strict VMUFAT size of 128Kb\n");
+		}
+		else if (size < STRICTSIZE) {
+			printf("Device only %lu octets in size. Too small for"
+				" strict VMUFAT volume\n", size);	
+			error = -1;
+		}
 	}
-out:
+	else
+	{
+		if ((size < BLOCKSIZE * 4) ||(blocknum > 0 && blocknum < 4)) {
+		printf("Device just %lu octets in size. Too small for"
+			" VMUFAT volume\n", size);
+		error = -1;
+		}
+		else if (size < blocknum * BLOCKSIZE) {
+			printf("Device only %lu octets in size. Too small for"
+				" your request of %i blocks\n", size, blocknum);
+			error = -1;
+		}
+		if (blocknum) {
+			size = blocknum * BLOCKSIZE;
+		}
+	}
+
+	if (error == 0) {
+		if (strict_compat)
+			_set_vmuparams_strict(param);
+		else
+			_set_vmuparams(param, size);
+		if (verbose) {
+			printf("VMUFAT file system: Root block at %i\n",
+				param->rootblock);
+			printf("\tFAT of length %i begins at %i\n", param->fatsize,
+				param->fatstart);
+			printf("\tDirectory of length %i begins at %i\n",
+				param->dirsize, param->dirstart);
+		}
+	}
 	return error;
 }
 
@@ -200,6 +234,62 @@ static char _i2bcd(unsigned int i)
 	return bcd;
 }
 
+static int _mark_fat_fatsize(int device_numb, const struct vmuparam *param,
+	const char* buffer)
+{
+	int error = -1;
+	if (param->fatsize > 1) {
+		for (uint i = param->fatstart - 1;
+			i > param->fatstart - param->fatsize; i--) {
+			if (pwrite(device_numb, buffer, BLOCKSIZE,
+				i * BLOCKSIZE) < BLOCKSIZE){
+					break;
+				}
+		}
+		error = 0;
+	}
+	return error;
+}
+
+static int _mark_fat(int device_numb, const struct vmuparam *param,
+	uint16_t *buf)
+{
+	int start, i, j, k;
+	int error = 0;
+	start = 2 * (param->fatsize + param->dirsize) /  BLOCKSIZE + 1;
+	for (j = param->rootblock - start; j < param->rootblock; j++) {
+		k = (j - param->dirstart - 1) * BLOCKSIZE;
+		for (i = 0; i < BLOCKSIZE; i = i + 2) {
+			/* Root or unreachable blocks */
+			if ((k + i) / 2 >= param->rootblock)
+				buf[i / 2] = __cpu_to_le16(FATEND); 
+			/* FAT */
+			else if ((k + i) / 2 > 1 + param->fatstart
+				- param->fatsize)
+				buf[i / 2] = __cpu_to_le16((k + i) / 2 - 1);
+			else if ((k + i) / 2 == 1 + param->fatstart
+				- param->fatsize)
+				buf[i / 2] = __cpu_to_le16(FATEND);
+			/* Directory */
+			else if ((k + i) / 2 >  1 + param->dirstart 
+				- param->dirsize)
+				buf[i / 2] = __cpu_to_le16((k + i) / 2 - 1);
+			else if ((k + i) / 2 == 1 + param->dirstart
+				- param->dirsize)
+				buf[i / 2] = __cpu_to_le16(FATEND);
+			else
+				buf[i/2] = __cpu_to_le16(FATFREE);
+		}
+		if (pwrite(device_numb, (char *)buf, BLOCKSIZE, j * BLOCKSIZE) 
+			< BLOCKSIZE) {
+			error = -1;
+			break;	
+		}
+	}
+	return error;
+}
+
+
 static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 {
 	char *buffer;
@@ -213,46 +303,15 @@ static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 	
 	buf = (uint16_t *)buffer;
 	for (i = 0; i < BLOCKSIZE / 2; i++)
-		buf[i] = __cpu_to_le16(0xFFFC);
+		buf[i] = __cpu_to_le16(FATFREE);
 
-	if (param->fatsize > 1) {
-		for (i = param->fatstart - 1;
-			i > param->fatstart - param->fatsize; i--) {
-			if (pwrite(device_numb, buffer, BLOCKSIZE,
-				i * BLOCKSIZE) < BLOCKSIZE)
-				goto badwrite;
-		}
-	}
+	error = _mark_fat_fatsize(device_numb, param, buffer);
+	if (error < 0)
+		goto badwrite;
 
-	/* Mark for the FAT and Directory */
-	start = 2 * (param->fatsize + param->dirsize) /  BLOCKSIZE + 1;
-	for (j = param->rootblock - start; j < param->rootblock; j++) {
-		k = (j - param->dirstart - 1) * BLOCKSIZE;
-		for (i = 0; i < BLOCKSIZE; i = i + 2) {
-			/* Root or unreachable blocks */
-			if ((k + i) / 2 >= param->rootblock)
-				buf[i / 2] = __cpu_to_le16(0xFFFA); 
-			/* FAT */
-			else if ((k + i) / 2 > 1 + param->fatstart
-				- param->fatsize)
-				buf[i / 2] = __cpu_to_le16((k + i) / 2 - 1);
-			else if ((k + i) / 2 == 1 + param->fatstart
-				- param->fatsize)
-				buf[i / 2] = __cpu_to_le16(0xFFFA);
-			/* Directory */
-			else if ((k + i) / 2 >  1 + param->dirstart 
-				- param->dirsize)
-				buf[i / 2] = __cpu_to_le16((k + i) / 2 - 1);
-			else if ((k + i) / 2 == 1 + param->dirstart
-				- param->dirsize)
-				buf[i / 2] = __cpu_to_le16(0xFFFA);
-			else
-				buf[i/2] = __cpu_to_le16(0xFFFC);
-		}
-		if (pwrite(device_numb, buffer, BLOCKSIZE, j * BLOCKSIZE) 
-			< BLOCKSIZE)
-			goto badwrite;
-	}
+	error = _mark_fat(device_numb, param, buf);
+	if (error < 0)
+		goto badwrite;
 
 	if (verbose)
 		printf("FAT written\n");
@@ -270,110 +329,136 @@ out:
 	return error;
 }
 		
+static struct vmudate _get_current_vmudate(void)
+{
+	time_t rawtime;
+	struct tm *ptm;
+	struct vmudate vmudate;
 
-static void _fill_root_block(char *buf, const struct vmuparam *param)
+	time(&rawtime);
+	ptm = gmtime(&rawtime);
+	if (!ptm) {
+		vmudate.century = 0;
+		vmudate.year = 0;
+		vmudate.month = 0;
+		vmudate.day = 0;
+		vmudate.hour = 0;
+		vmudate.minute = 0;
+		vmudate.second = 0;
+		vmudate.weekday = 0;
+	} else {
+		vmudate.century = _i2bcd(19 + ptm->tm_year / 100u);
+		vmudate.year = _i2bcd(ptm->tm_year - (ptm->tm_year /100u) * 100u);
+		vmudate.month = _i2bcd(ptm->tm_mon + 1u);
+		vmudate.day = _i2bcd(ptm->tm_mday);
+		vmudate.hour = _i2bcd(ptm->tm_hour);
+		vmudate.minute = _i2bcd(ptm->tm_min);
+		vmudate.second = _i2bcd(ptm->tm_sec);
+		// VMU week day counts from Monday and not Sunday
+		vmudate.weekday = _i2bcd((ptm->tm_wday + 6u)%7u);
+	}
+
+	return vmudate;
+}
+
+static void _set_vmudate(struct vmudate *vmudate, unsigned char *buf)
+{
+	buf[0] = vmudate->century;
+	buf[1] = vmudate->year;
+	buf[2] = vmudate->month;
+	buf[3] = vmudate->day;
+	buf[4] = vmudate->hour;
+	buf[5] = vmudate->minute;
+	buf[6] = vmudate->second;
+	buf[7] = vmudate->weekday;
+}
+
+static void _get_vmuparams(const struct vmuparam *param, uint16_t *wordbuf,
+	int strict_compat)
+{
+	wordbuf[0] = __cpu_to_le16(param->size >> BLOCKSHIFT);
+	wordbuf[2] = __cpu_to_le16(param->rootblock);
+	wordbuf[3] = __cpu_to_le16(param->fatstart);
+	wordbuf[4] = __cpu_to_le16(param->fatsize);
+	wordbuf[5] = __cpu_to_le16(param->dirstart);
+	wordbuf[6] = __cpu_to_le16(param->dirsize);
+	if (strict_compat) {
+		wordbuf[8] = __cpu_to_le16(HIDDENFIRST);
+		wordbuf[9] = __cpu_to_le16(HIDDENSIZE);
+	}
+}	
+
+static void _fill_root_block(unsigned char *buffer,
+	const struct vmuparam *param, int strict_compat)
 {
 	int i;
 	time_t rawtime;
 	struct tm *ptm;
-	char century, year, month, day, hour, minute, second, weekday;
+	struct vmudate vmudate;
+
 	uint16_t *wordbuf;
 
-	wordbuf = (uint16_t *)buf;
+	wordbuf = (uint16_t *)buffer;
+	memcpy(buffer, VMUFAT_MAGIC, 16u);
+	vmudate = _get_current_vmudate();
+	_set_vmudate(&vmudate, &buffer[BCDOFFSET]);
+	_get_vmuparams(param, (uint16_t *)&buffer[SIZEOFFSET], strict_compat);
+}
 
-	for (i = 0; i < 0x10; i++)
-		buf[i] = 0x55;
-
-	time(&rawtime);
-	ptm = gmtime(&rawtime);
-	if (!ptm)
-		return;
-	century = _i2bcd(19 + ptm->tm_year / 100);
-	year = _i2bcd(ptm->tm_year - (ptm->tm_year /100) * 100);
-	month = _i2bcd(ptm->tm_mon + 1);
-	day = _i2bcd(ptm->tm_mday);
-	hour = _i2bcd(ptm->tm_hour);
-	minute = _i2bcd(ptm->tm_min);
-	second = _i2bcd(ptm->tm_sec);
-	weekday = _i2bcd(ptm->tm_wday);
-
-	buf[0x30] = century;
-	buf[0x31] = year;
-	buf[0x32] = month;
-	buf[0x33] = day;
-	buf[0x34] = hour;
-	buf[0x35] = minute;
-	buf[0x36] = second;
-	buf[0x37] = weekday;
-
-	wordbuf[0x20] = __cpu_to_le16(param->rootblock);
-	wordbuf[0x22] = __cpu_to_le16(param->rootblock);
-	wordbuf[0x23] = __cpu_to_le16(param->fatstart);
-	wordbuf[0x24] = __cpu_to_le16(param->fatsize);
-	wordbuf[0x25] = __cpu_to_le16(param->dirstart);
-	wordbuf[0x26] = __cpu_to_le16(param->dirsize);
-	/* 32 octets per directory entry */
-	wordbuf[0x27] = __cpu_to_le16(param->dirsize * 8);
-}	
-
-static int mark_root_block(int device_numb, const struct vmuparam *param, int verbose)
+static int mark_root_block(int device_numb, const struct vmuparam *param,
+	int strict_compat, int verbose)
 {
-	char *zilches;
+	unsigned char *zilches;
 	int i, error = 0;
 	zilches = malloc(BLOCKSIZE);
 	if (!zilches) {
 		printf("Memory allocation failed.\n");
 		error = -1;
-		goto out;
 	}
-
-	memset(zilches, '\0', BLOCKSIZE);
-	_fill_root_block(zilches, param);
-	if (pwrite(device_numb, zilches, BLOCKSIZE,
-		param->rootblock * BLOCKSIZE) < BLOCKSIZE) {
-		printf("Could not write root block\n");
-		error = -1;
-		goto clean;
+	else {
+		memset(zilches, '\0', BLOCKSIZE);
+		_fill_root_block(zilches, param, strict_compat);
+		if (pwrite(device_numb, zilches, BLOCKSIZE,
+			param->rootblock * BLOCKSIZE) < BLOCKSIZE)
+		{
+			printf("Could not write root block\n");
+			error = -1;
+		}
+		else if (verbose) {
+			printf("Root block written to block %i\n", param->rootblock);
+			printf("BCD string: %c %c %c %c %c %c %c %c\n",
+				zilches[BCDOFFSET], zilches[BCDOFFSET + 1], zilches[BCDOFFSET + 2],
+				zilches[BCDOFFSET + 3], zilches[BCDOFFSET + 4],
+				zilches[BCDOFFSET + 5], zilches[BCDOFFSET + 6],
+				zilches[BCDOFFSET + 7]);
+		}
+		free(zilches);
 	}
-	if (verbose) {
-		printf("Root block written to block %i\n", param->rootblock);
-		printf("BCD string: %c %c %c %c %c %c %c %c\n",
-			zilches[0x30], zilches[0x31], zilches[0x32],
-			zilches[0x33], zilches[0x34], zilches[0x35],
-			zilches[0x36], zilches[0x37]);
-	}
-	
-clean:
-	free(zilches);
-out:
 	return error;
 }
 
 static int zero_blocks(int device_numb, const struct vmuparam *param, int verbose)
 {
-	char *zilches;
+	unsigned char *zilches;
 	int i, error = -1;
 	zilches = malloc(BLOCKSIZE);
 	if (!zilches) {
 		printf("Memory allocation failed.\n");
-		goto out;
-	}
-
-	memset(zilches, '\0', BLOCKSIZE);
-
-	for (i = 0; i <= param->dirstart; i++) {
-		if (pwrite(device_numb, zilches, BLOCKSIZE,
-			i * BLOCKSIZE) < BLOCKSIZE) {
-			printf("Write failed on device\n");
-			goto clean;
+	} else {
+		memset(zilches, '\0', BLOCKSIZE);
+		for (i = 0u; i <= param->dirstart; i++) {
+			error = 0;
+			if (pwrite(device_numb, zilches, BLOCKSIZE,
+				i * BLOCKSIZE) < BLOCKSIZE) {
+				printf("Write failed on device\n");
+				error = -1;
+				break;
+			}
 		}
+		if (verbose && error == 0)
+			printf("Other blocks zeroed\n");
+		free(zilches);
 	}
-	error = 0;
-	if (verbose)
-		printf("Other blocks zeroed\n");
-clean:
-	free(zilches);
-out:
 	return error;
 }
 		
@@ -389,37 +474,29 @@ static int scanforbad(int device_numb, struct badblocklist** root, int verbose)
 	if (!buffer) {
 		error = -1;
 		printf("Memory allocation failed.\n");
-		goto out;
-	}
+	} else {
 	
-	if (fstat(device_numb, &devstat) < 0) {
-		printf("Could not stat device.\n");
-		error = -1;
-		goto clean;
-	}
+		size = lseek(device_numb, 0, SEEK_END);
 
-	size = devstat.st_size;
-
-	for (i = 0; i < size/BLOCKSIZE; i++)
-	{
-		if (verbose > 0)
-			printf("Testing block %i\n", i);
-		got = pread(device_numb, buffer, BLOCKSIZE, i * BLOCKSIZE);
-		if (got != BLOCKSIZE) {
-			printf("Block %i gives bad read\n", i);
-			lastbadblock = _add_badblock(lastbadblock, i);
-			if (!lastbadblock) {
-				printf("Memory failure\n");
-				error = -1;
-				goto clean;
+		for (i = 0; i < size/BLOCKSIZE; i++)
+		{
+			if (verbose > 0)
+				printf("Testing block %i\n", i);
+			got = pread(device_numb, buffer, BLOCKSIZE, i * BLOCKSIZE);
+			if (got != BLOCKSIZE) {
+				printf("Block %i gives bad read\n", i);
+				lastbadblock = _add_badblock(lastbadblock, i);
+				if (!lastbadblock) {
+					printf("Memory failure\n");
+					error = -1;
+					break;
+				}
 			}
 			else if (*root == NULL)
 				*root = lastbadblock;
 		}
+		free(buffer);
 	}
-clean:
-	free(buffer);
-out:
 	return error;
 }
 
@@ -428,26 +505,22 @@ static int _mark_block_bad(int device_numb, int badblock,
 {
 	int error = -1;
 	int fatblock;
-	char *buffer;
+	char *buffer = NULL;
 	uint16_t *buf;
 	buffer = malloc(BLOCKSIZE);
 	if (!buffer) {
 		printf("Memory allocation failed\n");
-		goto out;
 	}
-
 	fatblock = (2 * badblock) / BLOCKSIZE + param->dirstart + 1;
-	if (pread(device_numb, buffer, BLOCKSIZE, fatblock * BLOCKSIZE) != BLOCKSIZE)
-		goto clean;
-	buf = (uint16_t *)buffer;
-	buf[badblock % (BLOCKSIZE / 2)] = __cpu_to_le16(0xFFFA);
-	if (pwrite(device_numb, buffer, BLOCKSIZE,
-		fatblock * BLOCKSIZE) != BLOCKSIZE)
-		goto clean;
-	error = 0;
-clean:
+	if (buffer && pread(device_numb, buffer, BLOCKSIZE, fatblock * BLOCKSIZE)
+		== BLOCKSIZE) {
+		buf = (uint16_t *)buffer;
+		buf[badblock % (BLOCKSIZE / 2)] = __cpu_to_le16(FATBAD);
+		if (pwrite(device_numb, buffer, BLOCKSIZE,
+			fatblock * BLOCKSIZE) == BLOCKSIZE)
+			error = 0;
+	}
 	free(buffer);
-out:
 	return error;
 
 }
@@ -458,60 +531,91 @@ static int mark_bad_blocks(int device_numb, struct badblocklist *root,
 	int error = 0;
 	int nobadblock;
 	struct badblocklist *next;
-	
 
-	if (!root)
-		goto out;
-
-	next = root;
-	while (next) {
-		nobadblock = next->number;
-		if (nobadblock < 0 || nobadblock > param->rootblock)
-			goto advance;
-		if (nobadblock >= param->dirstart
-			&& nobadblock <= param->rootblock) {
-			printf("Format fails as system block is bad\n");
-			error = -1;
-			goto out;
+	if (root) {
+		next = root;
+		while (next) {
+			nobadblock = next->number;
+			if (nobadblock < 0 || nobadblock > param->rootblock) {
+				next = next->next;
+				continue;
+			}
+			if (nobadblock >= param->dirstart
+				&& nobadblock <= param->rootblock) {
+				printf("Format fails as system block is bad\n");
+				error = -1;
+				break;
+			}
+			if (_mark_block_bad(device_numb, nobadblock, param)
+				< 0) {
+				printf("Format fails as cannot mark FAT"
+					" for bad block.\n");
+				error = -1;
+				break;
+			}
+			next = next->next;
 		}
-		if (_mark_block_bad(device_numb, nobadblock, param)
-			< 0) {
-			printf("Format fails as cannot mark FAT"
-				" for bad block.\n");
-			error = -1;
-			goto out;
-		}
-advance:
-		next = next->next;
 	}
-
-	if (verbose)
+	if (verbose && error == 0)
 		printf("Bad blocks now marked off in FAT.\n");
-
-out:
 	return error;
-}	
+}
+
+static int verifydevice(const char *device_name)
+{
+	int device_numb = -1;
+	if (checkmount(device_name) == 0) {
+		device_numb = open(device_name, O_RDWR);
+		if (device_numb < 0) {
+			printf("Attempting to open %s fails with error %i\n",
+				device_name, device_numb);
+		}
+	}
+	return device_numb;
+}
+
+static int verifyblock(char *device_name)
+{
+	int error = -1;
+	struct stat statbuf;
+	if (stat(device_name, &statbuf) < 0) {
+		printf("Cannot get status of %s\n", device_name);
+	}
+	else {
+		if (!S_ISBLK(statbuf.st_mode)) {
+			printf("%s must be a block device\n", device_name);
+		}			
+		else {
+			error = 0;
+		}
+	}
+	return error;
+}
 
 int main(int argc, char* argv[])
 {
 	int blocknum = 0;
 	int i;
+	int strict_compat = 0;
 	int verbose = 0, scanbadblocks = 0, useblocklist = 0, allowfile = 0;
-	int error = 1, device_numb;
+	int error = 0, device_numb;
 	char *blocklistfnm = NULL;
 	char *device_name = NULL;
-	struct stat statbuf;
+	char *label = NULL;
 	struct badblocklist* lstbadblocks = NULL;
 	struct vmuparam params;
 
 	if (argc < 2) {
 		usage();
-		goto out;
+		return error;
 	}
 
 	opterr = 0;
-	while ((i = getopt(argc, argv, "cl:N:B:vf")) != -1)
+	while ((i = getopt(argc, argv, "scl:N:B:L:vf")) != -1)
 		switch (i) {
+		case 's':
+			strict_compat = 1;
+			break;
 		case 'c':
 			scanbadblocks = 1;
 			break;
@@ -531,15 +635,21 @@ int main(int argc, char* argv[])
 		case 'f':
 			allowfile = 1;
 			break;
+		case 'L':
+			label = optarg;
+			/* Label handling not implemented yet */
+			printf("Label option not implemented yet.\n");
+			usage();
+			return error;
 		default:
 			usage();
-			goto out;
+			return error;
 		}
 	argc -= optind;
 	argv += optind;
 	if (!argc > 0) {
 		usage();
-		goto out;
+		return error;
 	}
 	device_name = argv[0];
 	argc--;
@@ -551,57 +661,44 @@ int main(int argc, char* argv[])
 			usage();
 	}
 
-	if (checkmount(device_name) < 0)
-		goto out;
-
-	device_numb = open(device_name, O_RDWR);
-	if (device_numb < 0) {
-		printf("Attempting to open %s fails with error %i\n",
-			device_name, device_numb);
-		goto out;
+	device_numb = verifydevice(device_name);
+	if (device_numb >= 0)
+	{
+		error = verifyblock(device_name);
+		if (error == 0) {
+			if (scanbadblocks > 0) {
+				error = scanforbad(device_numb, &lstbadblocks, verbose);
+			} else if (useblocklist > 0) {
+				error = readforbad(&lstbadblocks, blocklistfnm, verbose);
+			}
+		}
+	} else {
+		error = -1;
 	}
 
-	if (stat(device_name, &statbuf) < 0) {
-		printf("Cannot get status of %s\n", device_name);
-		goto out;
+	if (error == 0) {
+		error = calculate_vmuparams(device_numb, &params, blocknum,
+			strict_compat, verbose);
+		if (error == 0) {
+			error = mark_root_block(device_numb, &params, strict_compat,
+				verbose);
+		}
+		if (error == 0) {
+			error = mark_fat(device_numb, &params, verbose);
+		}
+		if (error == 0) {
+			error = zero_blocks(device_numb, &params, verbose);
+		}
+		if (error == 0) {
+			error = mark_bad_blocks(device_numb, lstbadblocks, &params, verbose);
+		}
+		close(device_numb);
 	}
-	if (allowfile < 1 && !S_ISBLK(statbuf.st_mode)) {
-		printf("%s must be a block device\n", device_name);
-		goto out;
-	}
-	
-	if (scanbadblocks > 0) {
-		if (scanforbad(device_numb, &lstbadblocks, verbose) < 0)
-			goto close;
-	}
-	else if (useblocklist > 0) {
-		if (readforbad(&lstbadblocks, blocklistfnm, verbose) < 0)
-			goto close;
-	}
-
-	if (calculate_vmuparams(device_numb, &params, blocknum, verbose) < 0)
-		goto close;
-
-	if (mark_root_block(device_numb, &params, verbose) < 0)
-		goto close;
-
-	if (mark_fat(device_numb, &params, verbose) < 0)
-		goto close;
-
-	if (zero_blocks(device_numb, &params, verbose) < 0)
-		goto close;
-
-	if (mark_bad_blocks(device_numb, lstbadblocks, &params, verbose) < 0)
-		goto close;
-
-	if (verbose)
+	if (error == 0 && verbose)
 		printf("VMUFAT volume created on %s\n", device_name);
-		
-	error = 0;
-close:
-	close(device_numb);
+
 	if (lstbadblocks)
 		clean_blocklist(lstbadblocks);
-out:
+	
 	return error;
 }
