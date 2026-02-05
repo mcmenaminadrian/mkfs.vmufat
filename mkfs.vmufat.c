@@ -358,7 +358,7 @@ static void _set_vmudate(struct vmudate *vmudate, unsigned char *buf)
 	buf[7] = vmudate->weekday;
 }
 
-static void _get_vmuparams(const struct vmuparam *param, uint16_t *wordbuf,
+static void _put_vmuparams(const struct vmuparam *param, uint16_t *wordbuf,
 	int strict_compat)
 {
 	wordbuf[0] = __cpu_to_le16(param->size >> BLOCKSHIFT);
@@ -387,7 +387,7 @@ static void _fill_root_block(unsigned char *buffer,
 	memcpy(buffer, VMUFAT_MAGIC, 16u);
 	vmudate = _get_current_vmudate();
 	_set_vmudate(&vmudate, &buffer[BCDOFFSET]);
-	_get_vmuparams(param, ((uint16_t *)buffer) + SIZEOFFSET, strict_compat);
+	_put_vmuparams(param, (uint16_t *)(&buffer[SIZEOFFSET]), strict_compat);
 }
 
 static int mark_root_block(int device_numb, const struct vmuparam *param,
