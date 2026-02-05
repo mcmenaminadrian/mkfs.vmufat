@@ -225,7 +225,7 @@ static int _mark_fat_fatsize(int device_numb, const struct vmuparam *param,
 	int error = -1;
 	if (param->fatsize > 1) {
 		for (uint i = param->fatstart - 1;
-			i > param->fatstart - param->fatsize; i--) {
+			i > (param->fatstart - param->fatsize); i--) {
 			if (pwrite(device_numb, buffer, BLOCKSIZE,
 				i * BLOCKSIZE) < BLOCKSIZE){
 					break;
@@ -387,7 +387,7 @@ static void _fill_root_block(unsigned char *buffer,
 	memcpy(buffer, VMUFAT_MAGIC, 16u);
 	vmudate = _get_current_vmudate();
 	_set_vmudate(&vmudate, &buffer[BCDOFFSET]);
-	_get_vmuparams(param, (uint16_t *)&buffer[SIZEOFFSET], strict_compat);
+	_get_vmuparams(param, ((uint16_t *)buffer) + SIZEOFFSET, strict_compat);
 }
 
 static int mark_root_block(int device_numb, const struct vmuparam *param,
