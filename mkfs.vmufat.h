@@ -9,12 +9,12 @@ static const char VMUFAT_MAGIC[16] = "UUUUUUUUUUUUUUUU";
 static const int BCDOFFSET = 0x30;
 static const int SIZEOFFSET = 0x40;
 static const int HIDDENFIRST = 200u;
-static const int HIDDENSIZE = 31u;
+static const int HIDDENSIZE = 40u;
 static const int ROOTBLOCK_STRICT = 255;
 static const int FATSTART_STRICT = 254;
-static const int FATSIZE_STRICT = 4;
-static const int DIRSTART_STRICT = 250;
-static const int DIRSIZE_STRICT = 16;
+static const int FATSIZE_STRICT = 1;
+static const int DIRSTART_STRICT = 253;
+static const int DIRSIZE_STRICT = 13;
 
 struct vmudate {
     unsigned char century;
