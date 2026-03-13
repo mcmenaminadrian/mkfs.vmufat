@@ -130,16 +130,16 @@ static void _set_vmuparams(struct vmuparam *param, off_t size)
 {
 	param->size = _round_down(size >> BLOCKSHIFT) << BLOCKSHIFT;
 	param->rootblock = (param->size >> BLOCKSHIFT) - 1;
-	param->fatstart = param->rootblock - 1;
 	param->fatsize = (2 * (param->size >> BLOCKSHIFT)) >> BLOCKSHIFT;
 	if (param->fatsize < 1)
 		param->fatsize = 1;
-	param->dirstart = param->fatstart - param->fatsize;
+	param->fatstart = param->rootblock - param->fatsize;
 	/* Remainder divided in ratio 16:1 between user blocks and directory */
 	param->dirsize = ((param->size >> BLOCKSHIFT)
 		- (1u + param->fatsize)) / (RATIO_DIR_TO_USERBLOCKS + 1u);
 	if (param->dirsize < 1)
 		param->dirsize = 1;
+	param->dirstart = param->fatstart - param->dirsize;
 }
 
 static void _set_vmuparams_strict(struct vmuparam *param)
