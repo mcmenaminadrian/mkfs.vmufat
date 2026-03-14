@@ -219,32 +219,32 @@ static char _i2bcd(unsigned int i)
 	return bcd;
 }
 
+/* Write out a totally empty FAT section as default*/
 static int _mark_fat_fatsize(int device_numb, const struct vmuparam *param,
 	const char* buffer)
 {
 	int error = 0;
-	if (param->fatsize > 1) { // Most FATs are size 1
-		for (uint i = param->fatstart - 1;
-			i > (param->fatstart - param->fatsize); i--) {
-			if (pwrite(device_numb, buffer, BLOCKSIZE,
-				i * BLOCKSIZE) < BLOCKSIZE) {
-					error = -1;
-					break;
-				}
-		}
+	for (uint i = param->fatstart;
+		i < (param->fatstart + param->fatsize); i++) {
+		if (pwrite(device_numb, buffer, BLOCKSIZE,
+			i * BLOCKSIZE) < BLOCKSIZE) {
+				error = -1;
+				break;
+			}
 	}
 	return error;
 }
 
-
+/* mark the superblock in FAT */
 static int mark_root_block_in_fat(const int device_numb, const struct vmuparam *param,
 	uint16_t *buf)
 {
 	int error = 0;
-	int rootblock = param->rootblock;
+	int rootblock = (param->rootblock)%BLOCKSIZE;
 	buf[rootblock] = __cpu_to_le16(FATEND);
 	if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
-		param->fatstart * BLOCKSIZE) < BLOCKSIZE) {
+		(param->fatstart + param->fatsize - 1) * BLOCKSIZE)
+		< BLOCKSIZE) {
 		error = -1;
 	}
 	return error;
@@ -293,36 +293,49 @@ static int mark_massive_fat_in_fat(const int device_numb, const struct vmuparam 
 	}
 }
 
+/* Handle FAT bigger than one block */
 static int mark_big_fat_in_fat(const int device_numb, const struct vmuparam *param,
 	uint16_t *buf)
 {
 	int error = 0;
+	int i, j;
 	if (param->fatsize > 128) {
 		return mark_massive_fat_in_fat(device_numb, param, buf);
 	} else {
-		int top_of_fat = param->fatstart - param->fatsize + 1;
-		for (int i = 0; i < param->fatsize - 1; i++)
+		int top_of_fat = param->fatstart + param->fatsize;
+		for (i = param->fatstart; i < top_of_fat; i++)
 		{
-			buf[top_of_fat + i] = __cpu_to_le16(top_of_fat + i + 1);
+			for (int j = 0; j < 128; j++)
+			{
+				buf[j] = __cpu_to_le16(i + j + 1);
+			}
+			if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
+				i * BLOCKSIZE) < BLOCKSIZE) {
+				error = -1;
+			}
+
 		}
-		buf[param->fatstart] = __cpu_to_le16(FATEND);
-	}
-	if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
-			param->fatstart * BLOCKSIZE) < BLOCKSIZE) {
-		error = -1;
+		buf[j - 2] = __cpu_to_le16(FATEND);
+		buf[j - 1] = __cpu_to_le16(FATEND);
 	}
 	return error;
 }
 
-
+/* mark out the FAT itself in FAT */
 static int mark_fat_in_fat(const int device_numb, const struct vmuparam *param,
 	uint16_t *buf)
 {
 	int error = 0;
+	int i;
 	if (param->fatsize > 1) {
 		error = mark_big_fat_in_fat(device_numb, param, buf);
 	} else {
-		buf[param->fatstart] = FATEND;
+		/* most FATs will be single block */
+		for (i = param->fatstart; i < (param->fatstart + param->fatszie - 1); i++) {
+			buf[i] = _cpu_to_le16(i);
+		}
+		buf[i] = _cpu_to_le16(FATEND);
+		buf[i + 1] = _cpu_to_le16(FATEND);
 		if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
 			param->fatstart * BLOCKSIZE) < BLOCKSIZE) {
 			error = -1;
@@ -334,11 +347,7 @@ static int mark_fat_in_fat(const int device_numb, const struct vmuparam *param,
 static int _mark_fat(int device_numb, const struct vmuparam *param,
 	uint16_t *buf)
 {
-	int error = 0;
-	error = mark_root_block_in_fat(device_numb, param, buf);
-	if (error == 0)
-		error = mark_fat_in_fat(device_numb, param, buf);
-	return error;
+	return mark_fat_in_fat(device_numb, param, buf);
 }
 
 
