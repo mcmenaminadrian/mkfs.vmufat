@@ -331,11 +331,11 @@ static int mark_fat_in_fat(const int device_numb, const struct vmuparam *param,
 		error = mark_big_fat_in_fat(device_numb, param, buf);
 	} else {
 		/* most FATs will be single block */
-		for (i = param->fatstart; i < (param->fatstart + param->fatszie - 1); i++) {
-			buf[i] = _cpu_to_le16(i);
+		for (i = param->fatstart; i < (param->fatstart + param->fatsize - 1); i++) {
+			buf[i] = __cpu_to_le16(i);
 		}
-		buf[i] = _cpu_to_le16(FATEND);
-		buf[i + 1] = _cpu_to_le16(FATEND);
+		buf[i] = __cpu_to_le16(FATEND);
+		buf[i + 1] = __cpu_to_le16(FATEND);
 		if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
 			param->fatstart * BLOCKSIZE) < BLOCKSIZE) {
 			error = -1;
