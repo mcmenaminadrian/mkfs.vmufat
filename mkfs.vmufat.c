@@ -224,7 +224,7 @@ static int _mark_fat_fatsize(int device_numb, const struct vmuparam *param,
 	const char* buffer)
 {
 	int error = 0;
-	for (uint i = param->fatstart;
+	for (unsigned int i = param->fatstart;
 		i < (param->fatstart + param->fatsize); i++) {
 		if (pwrite(device_numb, buffer, BLOCKSIZE,
 			i * BLOCKSIZE) < BLOCKSIZE) {
@@ -259,54 +259,23 @@ static void clean_buf(uint16_t* buf)
 	}
 }
 
-static int mark_massive_fat_in_fat(const int device_numb, const struct vmuparam *param,
-	uint16_t *buf)
-{
-	int error = 0;
-	for (int i = 0; i < 127; i++)
-	{
-		buf[i] = __cpu_to_le16(i + 1);
-	}
-	if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
-			param->fatstart * BLOCKSIZE) < BLOCKSIZE) {
-		error = -1;
-	}
-	if (error == 0) {
-		int top_of_fat = (param->fatstart - param->fatsize + 1);
-		int fat_blocks = param->fatsize / 128 - 1;
-		int first_fat_block = top_of_fat % 128;
-		clean_buf(buf);
-		for (int i = 0; i < fat_blocks; i++)
-		{
-			for (int j = first_fat_block; j < 128; j++)
-			{
-				int next_block = j + 1 + top_of_fat + (i * 128);
-				buf[j] = __cpu_to_le16(next_block);
-			}
-			first_fat_block = 0;
-			if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
-			(top_of_fat + i) * BLOCKSIZE) < BLOCKSIZE) {
-				error = -1;
-				break;
-			}
-		}
-	}
-}
-
 /* Handle FAT bigger than one block */
 static int mark_big_fat_in_fat(const int device_numb,
 	const struct vmuparam *param, uint16_t *buf)
 {
 	int error = 0;
-	int i, j;
-	for (i = param->fatstart; i < param->fatstart + param->fatsize; i++)
+	unsigned int i, j;
+	for (i = param->fatstart; i < (param->fatstart + param->fatsize); i++)
 	{
-		if (i != param->fatstart) {
-			clean_buf(buf);
-		}
-		for (j = 0; j < BLOCKSIZE >> 1; j++)
+		for (j = 0; j < (BLOCKSIZE >> 1); j++)
 		{
-			buf[j] = __cpu_to_le16(j + i + 1);
+			if ((j + ((i - param->fatstart)*(BLOCKSIZE >> 1)))
+					>= param->fatstart) {
+				buf[j] = __cpu_to_le16(j +
+					((i - param->fatstart)*(BLOCKSIZE >> 1)) + 1);
+			} else {
+				buf[j] = __cpu_to_le16(FATFREE);
+			}
 		}
 		if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
 			i * BLOCKSIZE) < BLOCKSIZE) {
@@ -364,10 +333,12 @@ static int mark_fat(int device_numb, const struct vmuparam *param, int verbose)
 	for (i = 0; i < BLOCKSIZE / 2; i++)
 		buf[i] = __cpu_to_le16(FATFREE);
 
+	/* Write out an empty FAT */
 	error = _mark_fat_fatsize(device_numb, param, buffer);
 	if (error < 0)
 		goto badwrite;
 
+	/* Now fill parts of the FAT in */
 	error = _mark_fat(device_numb, param, buf);
 	if (error < 0)
 		goto badwrite;
