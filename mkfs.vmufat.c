@@ -422,7 +422,7 @@ static void _put_vmuparams(const struct vmuparam *param, uint16_t *wordbuf,
 {
 	wordbuf[0] = __cpu_to_le16(param->size >> BLOCKSHIFT);
 	wordbuf[2] = __cpu_to_le16(param->rootblock);
-	wordbuf[3] = __cpu_to_le16(param->fatstart + param->fatsize - 1);
+	wordbuf[3] = __cpu_to_le16(param->fatstart);
 	wordbuf[4] = __cpu_to_le16(param->fatsize);
 	wordbuf[5] = __cpu_to_le16(param->dirstart);
 	wordbuf[6] = __cpu_to_le16(param->dirsize);
