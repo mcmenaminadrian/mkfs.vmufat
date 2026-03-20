@@ -118,17 +118,9 @@ out:
 	return error;
 }
 
-static unsigned int _round_down(unsigned int x)
-{
-	unsigned int y = 0x80000000;
-	while (y > x)
-		y = y >> 1;
-	return y;
-}
-
 static void _set_vmuparams(struct vmuparam *param, off_t size)
 {
-	param->size = _round_down(size >> BLOCKSHIFT) << BLOCKSHIFT;
+	param->size = size & 0xFFFFFF00;
 	param->rootblock = (param->size >> BLOCKSHIFT) - 1;
 	param->fatsize = (2 * (param->size >> BLOCKSHIFT)) >> BLOCKSHIFT;
 	if (param->fatsize < 1)
@@ -153,8 +145,8 @@ static void _set_vmuparams_strict(struct vmuparam *param)
 	param->dirsize = DIRSIZE_STRICT;
 }
 
-static int calculate_vmuparams(int device_numb, struct vmuparam *param,
-	int blocknum, int strict_compat, int verbose)
+static int calculate_vmuparams(const int device_numb, struct vmuparam *param,
+	const int blocknum, const int strict_compat, const int verbose)
 {
 	int error = 0;
 	off_t size;
@@ -176,15 +168,19 @@ static int calculate_vmuparams(int device_numb, struct vmuparam *param,
 	}
 	else
 	{
-		if ((size < BLOCKSIZE * 4) ||(blocknum > 0 && blocknum < 4)) {
+		if ((size < STRICTSIZE) ||(blocknum > 0 && blocknum < STRICTSIZE)) {
 		printf("Device just %lu octets in size. Too small for"
-			" VMUFAT volume\n", size);
+			" VMUFAT volume (min %u)\n", size, STRICTSIZE);
 		error = -1;
 		}
 		else if (size < blocknum * BLOCKSIZE) {
 			printf("Device only %lu octets in size. Too small for"
 				" your request of %i blocks\n", size, blocknum);
 			error = -1;
+		} else if (blocknum % STRICTSIZE != 0) {
+			size = (blocknum / STRICTSIZE) * STRICTSIZE;
+			printf("Device truncated to %lu octets (multiple of %u)\n", size,
+				STRICTSIZE);
 		}
 		if (blocknum) {
 			size = blocknum * BLOCKSIZE;
@@ -263,34 +259,50 @@ static void clean_buf(uint16_t* buf)
 static int mark_big_fat_in_fat(const int device_numb,
 	const struct vmuparam *param, uint16_t *buf)
 {
+	int i, write_point, x, j;
+	int remaining_directory;
 	int error = 0;
-	unsigned int i, j;
-	for (i = param->fatstart; i < (param->fatstart + param->fatsize); i++)
+	/* Mark FAT first - this will always be in one block due */
+	/* to the constraint on the maximum size of a VMU device */
+	x = 2; // account for root block and start of FAT
+	buf[(param->fatstart + param->fatsize) % BLOCKSIZE16] =
+		__cpu_to_le16(FATEND);
+	buf[(param->fatstart + param->fatsize - 1) % BLOCKSIZE16] =
+		__cpu_to_le16(FATEND);
+	for (i = param->fatstart;
+			i < (param->fatstart + param->fatsize - 1); i++) {
+		buf[i % BLOCKSIZE16] = __cpu_to_le16(i + 1);
+		x++;	/* Count how many writes */
+	}
+	remaining_directory = param->dirsize;
+	write_point = (BLOCKSIZE >> 1) - (x + 1);
+	j = ((param->size) >> BLOCKSHIFT) - 2;
+	while(remaining_directory)
 	{
-		for (j = 0; j < (BLOCKSIZE >> 1); j++)
-		{
-			if ((j + ((i - param->fatstart)*(BLOCKSIZE >> 1)))
-					>= param->fatstart) {
-				buf[j] = __cpu_to_le16(j +
-					((i - param->fatstart)*(BLOCKSIZE >> 1)) + 1);
+		buf[write_point--] = __cpu_to_le16(i - 1);
+		i--;
+		remaining_directory--;
+		if (remaining_directory && write_point < 0) {
+			if (pwrite(device_numb, (char *)buf,
+				BLOCKSIZE, j * BLOCKSIZE) < BLOCKSIZE)
+			{
+				error = -1;
+				goto out;
 			} else {
-				buf[j] = __cpu_to_le16(FATFREE);
+				j--;
+				clean_buf(buf);
+				write_point = BLOCKSIZE >> 1;
 			}
 		}
-		if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
-			i * BLOCKSIZE) < BLOCKSIZE) {
-			error = -1;
-			break;
-		}
 	}
-	if (error == 0) {
-		buf[j - 2] = __cpu_to_le16(FATEND);
-		buf[j - 1] = __cpu_to_le16(FATEND);
-		if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
-			(i - 1) * BLOCKSIZE) < BLOCKSIZE) {
-			error = -1;
-		}
+	buf[write_point + 1] = __cpu_to_le16(FATEND);
+	if (pwrite(device_numb, (char *)buf,
+		BLOCKSIZE, j * BLOCKSIZE) < BLOCKSIZE)
+	{
+		error = -1;
 	}
+
+out:
 	return error;
 }
 
@@ -304,11 +316,13 @@ static int _mark_fat(int device_numb, const struct vmuparam *param,
 		error = mark_big_fat_in_fat(device_numb, param, buf);
 	} else {
 		/* most FATs will be single block */
-		for (i = param->fatstart; i < (param->fatstart + param->fatsize - 1); i++) {
-			buf[i] = __cpu_to_le16(i);
+		buf[param->fatstart] = __cpu_to_le16(FATEND);
+		buf[param->fatstart + 1] = __cpu_to_le16(FATEND);
+		/* Now mark FAT for directory */
+		for (i = param->dirstart + param->dirsize - 1; i > param->dirstart; i--) {
+			buf[i] = __cpu_to_le16(i - 1);
 		}
-		buf[i] = __cpu_to_le16(FATEND);
-		buf[i + 1] = __cpu_to_le16(FATEND);
+		buf[param->dirstart] = __cpu_to_le16(FATEND);
 		if (pwrite(device_numb, (char *)buf, BLOCKSIZE,
 			param->fatstart * BLOCKSIZE) < BLOCKSIZE) {
 			error = -1;
@@ -404,7 +418,7 @@ static void _set_vmudate(struct vmudate *vmudate, unsigned char *buf)
 }
 
 static void _put_vmuparams(const struct vmuparam *param, uint16_t *wordbuf,
-	int strict_compat)
+	const int strict_compat)
 {
 	wordbuf[0] = __cpu_to_le16(param->size >> BLOCKSHIFT);
 	wordbuf[2] = __cpu_to_le16(param->rootblock);
@@ -415,11 +429,15 @@ static void _put_vmuparams(const struct vmuparam *param, uint16_t *wordbuf,
 	if (strict_compat) {
 		wordbuf[8] = __cpu_to_le16(HIDDENFIRST);
 		wordbuf[9] = __cpu_to_le16(HIDDENSIZE);
+	} else {
+		wordbuf[8] = __cpu_to_le16(param->rootblock -
+			(param->fatsize + param->dirsize));
+		wordbuf[9] = 0;
 	}
 }	
 
 static void _fill_root_block(unsigned char *buffer,
-	const struct vmuparam *param, int strict_compat)
+	const struct vmuparam *param, const int strict_compat)
 {
 	int i;
 	time_t rawtime;
@@ -467,7 +485,8 @@ static int mark_root_block(int device_numb, const struct vmuparam *param,
 	return error;
 }
 
-static int zero_blocks(int device_numb, const struct vmuparam *param, int verbose)
+static int zero_blocks(const int device_numb, const struct vmuparam *param,
+	const int verbose)
 {
 	unsigned char *zilches;
 	int i, error = -1;
@@ -493,7 +512,8 @@ static int zero_blocks(int device_numb, const struct vmuparam *param, int verbos
 }
 		
 
-static int scanforbad(int device_numb, struct badblocklist** root, int verbose)
+static int scanforbad(const int device_numb, struct badblocklist** root,
+	const int verbose)
 {
 	int error = 0, i;
 	struct badblocklist *lastbadblock = NULL;

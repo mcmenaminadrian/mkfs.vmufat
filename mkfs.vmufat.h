@@ -2,6 +2,7 @@
 
 #define K1 1024
 static const int BLOCKSIZE = 512;
+static const int BLOCKSIZE16 = 256;
 static const int STRICTSIZE = 128;
 static const int BLOCKSHIFT = 9;
 static const int RATIO_DIR_TO_USERBLOCKS = 16;
@@ -13,7 +14,7 @@ static const int HIDDENSIZE = 40u;
 static const int ROOTBLOCK_STRICT = 255;
 static const int FATSTART_STRICT = 254;
 static const int FATSIZE_STRICT = 1;
-static const int DIRSTART_STRICT = 253;
+static const int DIRSTART_STRICT = 241;
 static const int DIRSIZE_STRICT = 13;
 
 struct vmudate {
